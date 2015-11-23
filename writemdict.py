@@ -28,6 +28,7 @@ Simple usage example:
 from __future__ import unicode_literals
 
 import struct, zlib, operator, sys, datetime
+import urllib, codecs, re, os
 
 from ripemd128 import ripemd128
 from cgi import escape
@@ -144,13 +145,14 @@ class _OffsetTableEntry(object):
 
 class MDictWriter(object):
 	
-	def __init__(self, d, title, description, 
+	def __init__(self, filename, datadir, title, description,
 	             block_size=65536, 
 	             encrypt_index=False,
 	             encoding="utf8",
 	             compression_type=2,
 	             version="2.0",
 	             encrypt_key = None,
+	             verbose = None,
 	             register_by = None,
 	             user_email = None,
 				 user_device_id = None):
@@ -194,7 +196,6 @@ class MDictWriter(object):
 		  encrypted key in a separate .key file.
 		"""
 
-		self._num_entries = len(d)
 		self._title=title
 		self._description=description
 		self._block_size = block_size
@@ -229,13 +230,26 @@ class MDictWriter(object):
 		if version not in ["2.0", "1.2"]:
 			raise ParameterError("Unknown version")
 		self._version = version
-		self._build_offset_table(d)
+		if verbose:
+			sys.stdout.write("Build offset table...\n")
+		num = self._build_offset_table(filename, datadir, verbose)
+		self._num_entries = num
+		if verbose:
+			sys.stdout.write("Build key blocks...\n")
 		self._build_key_blocks()
+		if verbose:
+			sys.stdout.write("Build keyb index...\n")
 		self._build_keyb_index()
+		if verbose:
+			sys.stdout.write("Build record blocks...\n")
 		self._build_record_blocks()
+		if verbose:
+			sys.stdout.write("Build recordb index...\n")
 		self._build_recordb_index()
+		if verbose:
+			sys.stdout.write("Done!\n")
 		
-	def _build_offset_table(self,d):
+	def _build_offset_table(self, filename, datadir = 'data/text', verbose = True):
 		# Sets self._offset_table to a table of entries _OffsetTableEntry objects e.
 		#
 		# where:
@@ -247,12 +261,69 @@ class MDictWriter(object):
 		#  e.record_null: encoded version of the record, null-terminated
 		#
 		# Also sets self._total_record_len to the total length of all record fields.
-		items = list(d.items())
-		items.sort(key=operator.itemgetter(0))
-		
 		self._offset_table = []
+
+		# append /
+		if datadir[-1:] != '/':
+			datadir = datadir + '/'
+
 		offset = 0
-		for key, record in items:
+		num = 0
+		#
+		# a filename given and it is a plain list file
+		# tab separated key, filename pairs
+		# ...
+		# keyname[TAB]filename
+		# ...
+		if os.path.isfile(filename):
+			f = codecs.open(filename, 'r', "utf-8")
+			files = []
+			while True:
+				# read key
+				l = f.readline()
+				if not l:
+					break
+				l = l.rstrip('\n')
+				files.append(l.encode('utf-8'))
+			f.close()
+		#
+		# for dir case
+		# e.g.) MoniWiki text dir
+		elif os.path.isdir(filename):
+			lst = os.listdir(filename)
+			files = []
+			for l in lst:
+				if l[0:1] == '.':
+					continue
+				name = self._decode(l)
+				files.append(name)
+
+		progress = [ '|', '/', '-', '\\' ]
+
+		for l in files:
+			if verbose:
+				sys.stdout.write('\r' + progress[num % 4])
+			tmp = l.decode('utf-8')
+			m = tmp.split('\t', 2)
+			key = m[0]
+			if len(m) > 1:
+				keyfile = m[1].encode('utf-8')
+			else:
+				keyfile = self._encode(m[0].encode('utf-8'))
+			if verbose:
+				print "\r",l
+
+			# read record file
+			srcfile = datadir + keyfile
+			if not os.path.isfile(srcfile):
+				continue;
+
+			num = num + 1
+
+			ff = codecs.open(srcfile, 'r', "utf-8")
+			record = ff.read()
+			ff.close()
+
 			key_enc = key.encode(self._python_encoding)
 			key_null = (key+"\0").encode(self._python_encoding)
 			key_len = len(key_enc) // self._encoding_length
@@ -264,8 +335,40 @@ class MDictWriter(object):
 			    record_null=record_null,
 			    offset=offset))
 			offset += len(record_null)
+		if verbose:
+			print "\rtotal=",num
 		self._total_record_len = offset
-	
+		if verbose:
+			sys.stdout.write("\r\n")
+		return num
+
+	# decode moniwiki legacy encoded filename.
+	def _decode(self, line):
+		# decode pagename to key filename
+		out = line.replace('_', '%')
+		unquoted = urllib.unquote(out.encode('utf-8'))
+		return unquoted
+
+	# encode pagename to moniwiki legacy encode.
+	def _encode(self, line):
+		# encode pagename to key filename
+		chars = "#;/?=&.~_:-"
+		out = ""
+		check = re.compile("[a-zA-Z0-9]")
+		tr = re.compile("[#;/?=&.~_:-]")
+		for c in line:
+			if not re.match(check, c):
+				encoded = urllib.quote(c).lower()
+				c = ""
+				for e in encoded:
+					if re.match(tr, e):
+						e = "_%02x" % ord(e)
+					c = c + e
+			out = out + c
+
+		out = out.replace('%', '_')
+		return out
+
 	def _split_blocks(self, block_type):
 		# Split either the records or the keys into blocks for compression.
 		# 
