@@ -318,11 +318,15 @@ class MDictWriter(object):
 			if not os.path.isfile(srcfile):
 				continue;
 
-			num = num + 1
+			try:
+				ff = codecs.open(srcfile, 'r', "utf-8")
+				record = ff.read()
+				ff.close()
+			except UnicodeDecodeError:
+				sys.stdout.write("* ERROR: Fail to decode " + key + '(' + keyfile + ')' + '\n')
+				continue
 
-			ff = codecs.open(srcfile, 'r', "utf-8")
-			record = ff.read()
-			ff.close()
+			num = num + 1
 
 			key_enc = key.encode(self._python_encoding)
 			key_null = (key+"\0").encode(self._python_encoding)
